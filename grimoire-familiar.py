@@ -113,6 +113,40 @@ def fetch_active_monsters():
         return []
 
 
+def fetch_dead_ends(target_id: str, limit: int = 3):
+    """Pulls community failure vaccine from the Citadel Failure Vault."""
+    url = f"{API_BASE}/dead_ends?target_id={urllib.parse.quote(target_id)}&limit={limit}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Grimoire-Familiar/1.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
+def record_dead_end(target_id: str, error_message: str, failed_code: str, model_used: str):
+    """Commits a deflected strike or compiler error into the Citadel Failure Vault for all hunters."""
+    url = f"{API_BASE}/dead_ends"
+    payload = {
+        "target_id": target_id,
+        "target_type": "MONSTER",
+        "model_used": model_used,
+        "error_message": error_message,
+        "failed_code": failed_code,
+        "test_logs": [error_message]
+    }
+    try:
+        data = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(url, data=data, headers=auth_headers())
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except Exception:
+        return None
+
+
 def auth_headers():
     """Headers for authenticated API calls (heartbeats and strikes require a key)."""
     h = {"Content-Type": "application/json", "User-Agent": "Grimoire-Familiar/1.0"}
@@ -235,6 +269,16 @@ def main():
             print(f"\033[91m[⚔️ ENCOUNTER]\033[0m Familiar engaging \033[1m{m_name}\033[0m [{m_tier}] (HP: {target.get('hp', 0):,})...")
             print(f"  \033[90mCurse: {m_curse}\033[0m")
 
+            # Ingest Failure Vault vaccine for this monster
+            dead_ends = fetch_dead_ends(m_id, limit=3)
+            vaccine_notes = ""
+            if dead_ends:
+                print(f"  \033[93m[💀 Failure Vault Vaccine Ingested]\033[0m Loaded {len(dead_ends)} prior compiler/gate defect(s)")
+                vaccine_notes = "\n\nCRITICAL - DO NOT REPEAT THESE DEFECTS THAT FAILED THE COMPILER GAUNTLET:\n"
+                for idx, de in enumerate(dead_ends, 1):
+                    d_err = de.get("error") or de.get("error_message") or "Defect deflected by gate"
+                    vaccine_notes += f"- Defect #{idx}: {d_err}\n"
+
             # Determine research strategy for this encounter
             strat = args.strategy
             if strat == "auto":
@@ -243,17 +287,17 @@ def main():
             if strat == "frontier":
                 temp = 0.55
                 sys_prompt = f"You are a principal systems performance optimizer. Purify this cursed {m_lang} code. Remove all panics, unwrap() calls, allocations, or range errors. Return ONLY the purified implementation inside ```{m_lang.lower()} markdown code fences."
-                user_prompt = f"TARGET MONSTER: {m_name}\nCURSE: {m_curse}\nCURSED CODE:\n{m_code}\n\nINSTRUCTIONS:\n1. Rewrite into clean, high-performance, panic-free code.\n2. Return ONLY the code inside ```{m_lang.lower()} code fences."
+                user_prompt = f"TARGET MONSTER: {m_name}\nCURSE: {m_curse}\nCURSED CODE:\n{m_code}{vaccine_notes}\n\nINSTRUCTIONS:\n1. Rewrite into clean, high-performance, panic-free code.\n2. Return ONLY the code inside ```{m_lang.lower()} code fences."
                 proof_type = "LATENCY"
             elif strat == "formal":
                 temp = 0.20
                 sys_prompt = f"You are a formal verification specialist. Enforce inductive safety invariants on this {m_lang} code. Return ONLY replacement code in ```{m_lang.lower()} code fences."
-                user_prompt = f"TARGET MONSTER: {m_name}\nCURSED CODE:\n{m_code}\n\nINSTRUCTIONS: Return complete working replacement code in ```{m_lang.lower()} code fences."
+                user_prompt = f"TARGET MONSTER: {m_name}\nCURSED CODE:\n{m_code}{vaccine_notes}\n\nINSTRUCTIONS: Return complete working replacement code in ```{m_lang.lower()} code fences."
                 proof_type = "KANI"
             else:
                 temp = 0.20
                 sys_prompt = f"You are a bare-metal performance engineer. Return ONLY self-contained, panic-free, zero-allocation replacement code inside ```{m_lang.lower()} code fences."
-                user_prompt = f"TARGET MONSTER: {m_name}\nCURSE: {m_curse}\nCURSED CODE:\n{m_code}\n\nOptimize and purify this cursed code for zero heap allocations and 64-byte cache alignment. Return ONLY the code inside ```{m_lang.lower()} code fences."
+                user_prompt = f"TARGET MONSTER: {m_name}\nCURSE: {m_curse}\nCURSED CODE:\n{m_code}{vaccine_notes}\n\nOptimize and purify this cursed code for zero heap allocations and 64-byte cache alignment. Return ONLY the code inside ```{m_lang.lower()} code fences."
                 proof_type = "ZERO_ALLOC"
 
             t0 = time.time()
@@ -282,7 +326,10 @@ def main():
                 res = submit_strike(m_id, shaved_latency, args.handle, proof_type, clean_code)
                 if not res or res.get("status") in ("DEFLECTED", "ERROR") or "error" in res:
                     err_msg = res.get("error", "Unknown server deflection") if res else "Server connection failed"
-                    print(f"  \033[91m🛡️ STRIKE DEFLECTED:\033[0m {err_msg}\n")
+                    print(f"  \033[91m🛡️ STRIKE DEFLECTED:\033[0m {err_msg}")
+                    # Commit deflected attempt to Failure Vault for all Citadel hunters
+                    record_dead_end(m_id, err_msg, clean_code, model)
+                    print(f"  \033[90m↳ Committed to Failure Vault. All hunters now vaccinated.\033[0m\n")
                     time.sleep(args.interval)
                     continue
 
